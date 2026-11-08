@@ -110,7 +110,7 @@ equal(backwards.samples.length, 1);
 const bundled = Gio.File.new_for_uri(import.meta.url).get_parent().get_parent()
     .get_child('extension').get_child('providers').get_path();
 const discovered = await discoverProviders(bundled);
-equal(discovered.map(provider => provider.id).join(','), 'openrouter,runpod');
+equal(discovered.map(provider => provider.id).join(','), 'fal,openrouter,runpod');
 const temp = Gio.File.new_for_path(GLib.dir_make_tmp('cloud-cost-test-XXXXXX'));
 const extra = temp.get_child('custom');
 extra.make_directory(null);
