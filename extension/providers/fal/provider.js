@@ -12,7 +12,9 @@ const HOUR = 60 * 60 * 1000;
 const MAX_PAGES = 5;
 
 function query(path, key, fetch) {
-    const response = fetch(`${API}${path}`, key, null, {authScheme: 'Key'});
+    const response = fetch(`${API}${path}`, key, null, {
+        authScheme: 'Key', timeoutSeconds: 30, retries: 2,
+    });
     if (response?.error)
         throw new ProviderError('fal.ai billing request rejected');
     return response;

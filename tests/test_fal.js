@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+import GLib from 'gi://GLib';
 import {collect} from '../extension/collector-core.js';
 import {fetchJson} from '../extension/provider-http.js';
 import {ProviderError} from '../extension/provider-utils.js';
@@ -33,6 +34,8 @@ function request(url, key, payload, options) {
     equal(key, KEY);
     equal(payload, null);
     equal(options.authScheme, 'Key');
+    equal(options.timeoutSeconds, 30);
+    equal(options.retries, 2);
     if (url === 'https://api.fal.ai/v1/account/billing?expand=credits')
         return {credits: {current_balance: '24.5', currency: 'USD'}};
     assert(url.startsWith('https://api.fal.ai/v1/models/billing-events?limit=10000&'));
@@ -152,7 +155,7 @@ for (const [payload, options, scheme, method] of [
     [null, {authScheme: 'Key'}, 'Key', 'GET'],
 ]) {
     let sent = false;
-    const session = {send_and_read(message) {
+    const session = {timeout: 15, send_and_read(message) {
         sent = true;
         equal(message.method, method);
         equal(message.request_headers.get_one('Authorization'), `${scheme} ${KEY}`);
@@ -167,5 +170,104 @@ for (const [payload, options, scheme, method] of [
 }
 throws(() => fetchJson({}, 'https://example.com', KEY, null, {authScheme: KEY}),
     'Unsupported provider authentication scheme');
+
+// Deterministic transport tests: real Soup messages, fake I/O and monotonic clock.
+const originalSleep = GLib.usleep;
+const originalClock = GLib.get_monotonic_time;
+let clock = 0;
+let delays = [];
+GLib.get_monotonic_time = () => clock;
+GLib.usleep = delay => { delays.push(delay); clock += delay; };
+function transport(responses) {
+    const messages = [];
+    const timeouts = [];
+    const session = {timeout: 15, send_and_read(message) {
+        messages.push(message);
+        timeouts.push(this.timeout);
+        assert(responses.length, 'Too many requests');
+        const response = responses.shift();
+        if (response instanceof Error)
+            throw response;
+        Object.defineProperty(message, 'status_code', {value: response.status ?? 200});
+        return new GLib.Bytes(new TextEncoder().encode(response.body ?? '{"ok":true}'));
+    }};
+    return {session, messages, timeouts};
+}
+const retryOptions = {authScheme: 'Key', timeoutSeconds: 30, retries: 2};
+try {
+    // Recover from a timeout and then a server error, without leaking request details.
+    let mock = transport([new Error(KEY), {status: 503}, {}]);
+    const data = fetchJson(mock.session, 'https://example.com/billing', KEY, null, retryOptions);
+    equal(data.ok, true);
+    equal(mock.messages.length, 3);
+    equal(new Set(mock.messages).size, 3);
+    equal(mock.timeouts.join(','), '30,30,30');
+    equal(mock.session.timeout, 15);
+    equal(delays.join(','), '1000000,2000000');
+    for (const message of mock.messages)
+        equal(message.request_headers.get_one('Authorization'), `Key ${KEY}`);
+
+    for (const status of [408, 429, 500, 502, 504]) {
+        mock = transport([{status}, {}]);
+        equal(fetchJson(mock.session, 'https://example.com', KEY, null, retryOptions).ok, true);
+        equal(mock.messages.length, 2);
+        equal(mock.session.timeout, 15);
+    }
+    for (const status of [400, 401, 403, 404]) {
+        mock = transport([{status}]);
+        throws(() => fetchJson(mock.session, 'https://example.com', KEY, null, retryOptions),
+            `HTTP ${status}`);
+        equal(mock.messages.length, 1);
+        equal(mock.session.timeout, 15);
+    }
+    for (const response of [new Error(KEY), {status: 503}]) {
+        mock = transport([response, response, response]);
+        throws(() => fetchJson(mock.session, 'https://example.com', KEY, null, retryOptions),
+            response instanceof Error ? 'network or timeout' : 'HTTP 503');
+        equal(mock.messages.length, 3);
+        equal(mock.session.timeout, 15);
+    }
+    // Never retry invalid JSON or POSTs, even when retries are requested.
+    mock = transport([{body: KEY}]);
+    throws(() => fetchJson(mock.session, 'https://example.com', KEY, null, retryOptions), 'invalid JSON');
+    equal(mock.messages.length, 1);
+    equal(mock.session.timeout, 15);
+    mock = transport([new Error(KEY)]);
+    throws(() => fetchJson(mock.session, 'https://example.com', KEY, {query: 'test'}, retryOptions),
+        'network or timeout');
+    equal(mock.messages.length, 1);
+    equal(mock.session.timeout, 15);
+
+    // The remaining collection budget caps a request and prevents further retries.
+    mock = transport([{status: 503}]);
+    const before = delays.length;
+    throws(() => fetchJson(mock.session, 'https://example.com', KEY, null,
+        {...retryOptions, deadline: clock + 1.5e6}), 'HTTP 503');
+    equal(mock.timeouts[0], 1);
+    equal(mock.messages.length, 1);
+    equal(delays.length, before);
+    equal(mock.session.timeout, 15);
+    mock = transport([]);
+    throws(() => fetchJson(mock.session, 'https://example.com', KEY, null,
+        {...retryOptions, deadline: clock}), 'budget exhausted');
+    equal(mock.messages.length, 0);
+    equal(mock.session.timeout, 15);
+
+    // Recovery flows through collection without replacing the UI values with errors.
+    mock = transport([
+        new Error(KEY), {body: '{"credits":{"current_balance":24.5,"currency":"USD"}}'},
+        {status: 502}, {body: JSON.stringify(page([event('2026-01-02T12:00:00Z', 0.2)]))},
+    ]);
+    row = run((...args) => fetchJson(mock.session, ...args));
+    equal(row.balance, '24.5');
+    equal(row.last_hour_spend, '0.2');
+    equal(row.balance_error, null);
+    equal(row.spend_error, null);
+    equal(mock.session.timeout, 15);
+    assert(!JSON.stringify(row).includes(KEY), 'Key leaked into status');
+} finally {
+    GLib.usleep = originalSleep;
+    GLib.get_monotonic_time = originalClock;
+}
 
 print('fal.ai and HTTP tests passed');

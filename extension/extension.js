@@ -11,7 +11,8 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 const STALE_AFTER_SECONDS = 600;
 const COLLECT_INTERVAL_SECONDS = 180;
-const COLLECT_TIMEOUT_SECONDS = 100;
+// Longer than the collector's 210s HTTP budget; collection runs outside Shell.
+const COLLECT_TIMEOUT_SECONDS = 240;
 
 function usd(value) {
     if (value === null || value === undefined)

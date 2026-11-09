@@ -43,8 +43,11 @@ function lookup(id) {
 
 async function main() {
     const providers = await discoverProviders(providersDir);
+    // Leave time to publish before Shell's 240s watchdog, even with slow pages/retries.
+    const deadline = GLib.get_monotonic_time() + 210 * 1e6;
     const status = collect(new Date(), providers, lookup,
-        (...args) => fetchJson(session, ...args),
+        (url, key, payload = null, options = {}) =>
+            fetchJson(session, url, key, payload, {...options, deadline}),
         id => {
             try {
                 return readJson(samplesPath(id));
