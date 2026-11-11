@@ -91,7 +91,17 @@ status = run(() => 'rp-key', (url, key, payload) => {
 }, sample).status;
 equal(status.providers.runpod.last_hour_spend, '0.5');
 equal(status.providers.runpod.spend_source, 'balance_estimate');
+equal(status.providers.runpod.spend_note, null);
 assert(!JSON.stringify(status).includes('secret'), 'Raw provider error leaked');
+
+status = run(() => 'rp-key', (url, key, payload) => {
+    if (url.endsWith('/graphql') && payload.query.includes('billing('))
+        throw new Error('Billing unavailable');
+    return fetch(url, key, payload);
+}).status;
+equal(status.providers.runpod.last_hour_spend, null);
+equal(status.providers.runpod.spend_source, 'balance_pending');
+equal(status.providers.runpod.spend_error, null);
 
 const refill = recordBalance(new Date('2026-01-02T12:33:00Z'), 20, saved);
 equal(refill.estimate, null);
@@ -110,7 +120,7 @@ equal(backwards.samples.length, 1);
 const bundled = Gio.File.new_for_uri(import.meta.url).get_parent().get_parent()
     .get_child('extension').get_child('providers').get_path();
 const discovered = await discoverProviders(bundled);
-equal(discovered.map(provider => provider.id).join(','), 'fal,openrouter,runpod');
+equal(discovered.map(provider => provider.id).join(','), 'elyum,fal,nanogpt,openrouter,runpod');
 const temp = Gio.File.new_for_path(GLib.dir_make_tmp('cloud-cost-test-XXXXXX'));
 const extra = temp.get_child('custom');
 extra.make_directory(null);

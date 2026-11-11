@@ -83,9 +83,11 @@ export function collect(now, providers, lookup, fetch, readSamples, writeSamples
             if (estimate !== null) {
                 row.last_hour_spend = dollars(estimate);
                 row.spend_source = 'balance_estimate';
-                row.spend_note = 'Estimate from balance changes; small refills may be missed';
+                // The UI marks estimates with ≈; no long explanatory menu suffix needed.
             } else if (provider.estimateFromBalance && balance !== null) {
-                row.spend_error = `${provider.name} billing unavailable; collecting ~1h of balance history`;
+                // An unavailable bill is expected while balance history is warming up.
+                // Keep the unavailable spend as '-', without a wide menu error message.
+                row.spend_source = 'balance_pending';
             } else {
                 row.spend_error = safeError(error);
             }

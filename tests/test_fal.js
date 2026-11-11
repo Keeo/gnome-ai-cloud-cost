@@ -123,8 +123,8 @@ row = run((url, ...args) => {
 });
 equal(row.balance, '24.5');
 equal(row.last_hour_spend, null);
-equal(row.spend_source, null);
-equal(row.spend_error, 'fal.ai billing unavailable; collecting ~1h of balance history');
+equal(row.spend_source, 'balance_pending');
+equal(row.spend_error, null);
 assert(!JSON.stringify(row).includes(KEY), 'Key leaked into status');
 
 // Keys that can read balance but not billing still provide an explicitly marked estimate.
@@ -136,12 +136,13 @@ const deniedBilling = (url, ...args) => {
 row = run(deniedBilling);
 equal(row.balance, '-2.38');
 equal(row.last_hour_spend, null);
-assert(row.spend_error.includes('collecting ~1h'));
+equal(row.spend_source, 'balance_pending');
+equal(row.spend_error, null);
 row = run(deniedBilling, () => KEY, [{time: '2026-01-02T11:30:00Z', balance: '-1.88'}]);
 equal(row.last_hour_spend, '0.5');
 equal(row.spend_source, 'balance_estimate');
 equal(row.spend_error, null);
-assert(row.spend_note.includes('Estimate from balance changes'));
+equal(row.spend_note, null);
 row = run(() => ({error: {message: KEY}}));
 equal(row.balance, null);
 equal(row.last_hour_spend, null);

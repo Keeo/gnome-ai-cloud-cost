@@ -1,7 +1,7 @@
 {
   "uuid": "cloud-cost@keeo.github.io",
   "name": "Cloud Cost",
-  "description": "OpenRouter, Runpod and fal.ai credit and spending over the last hour",
+  "description": "OpenRouter, Runpod, fal.ai, NanoGPT and Elyum credit and spending over the last hour",
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.cloud-cost",
   "url": "https://github.com/Keeo/gnome-ai-cloud-cost"

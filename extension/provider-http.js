@@ -9,7 +9,7 @@ import {ProviderError} from './provider-utils.js';
 export function fetchJson(session, url, key, payload = null, {
     authScheme = 'Bearer', timeoutSeconds = session.timeout, retries = 0, deadline = Infinity,
 } = {}) {
-    if (!['Bearer', 'Key'].includes(authScheme))
+    if (!['Bearer', 'Key', 'X-API-Key'].includes(authScheme))
         throw new ProviderError('Unsupported provider authentication scheme');
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60 ||
         !Number.isInteger(retries) || retries < 0 || retries > 2)
@@ -26,7 +26,10 @@ export function fetchJson(session, url, key, payload = null, {
             const message = Soup.Message.new(payload === null ? 'GET' : 'POST', url);
             if (!message)
                 throw new ProviderError('Provider request failed');
-            message.request_headers.append('Authorization', `${authScheme} ${key}`);
+            if (authScheme === 'X-API-Key')
+                message.request_headers.append('X-API-Key', key);
+            else
+                message.request_headers.append('Authorization', `${authScheme} ${key}`);
             message.request_headers.append('Accept', 'application/json');
             if (payload !== null)
                 message.set_request_body_from_bytes('application/json',

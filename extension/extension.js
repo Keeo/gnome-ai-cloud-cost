@@ -142,11 +142,11 @@ function createIndicatorClass() {
             const spend = stale ? null : amount(row.last_hour_spend);
             const segment = this._segments[id];
             segment.credit.text = credit === null ? '-' : `$${Math.floor(credit)}`;
-            // Hide negligible reported spending, never unavailable spending.
-            const negligible = spend !== null && spend < 0.001;
-            segment.dot.visible = !negligible;
-            segment.rate.visible = !negligible;
-            segment.rate.text = spend === null ? '-' :
+            // Show hourly spending only when available and non-negligible.
+            const showSpend = spend !== null && spend >= 0.001;
+            segment.dot.visible = showSpend;
+            segment.rate.visible = showSpend;
+            segment.rate.text = spend === null ? '' :
                 `${row.spend_source === 'balance_estimate' ? '≈' : ''}$${(Math.ceil(spend * 10) / 10).toFixed(1)}/h`;
             segment.rate.remove_style_class_name('cloud-cost-rate-warning');
             segment.rate.remove_style_class_name('cloud-cost-rate-danger');
