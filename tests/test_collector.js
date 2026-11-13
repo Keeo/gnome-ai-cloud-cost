@@ -3,6 +3,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {collect, recordBalance} from '../extension/collector-core.js';
 import {discoverProviders} from '../extension/provider-loader.js';
+import {fetchJson} from '../extension/provider-http.js';
 import * as openrouter from '../extension/providers/openrouter/provider.js';
 import * as runpod from '../extension/providers/runpod/provider.js';
 
@@ -59,6 +60,43 @@ equal(status.providers.runpod.name, 'Runpod');
 equal(status.providers.runpod.balance, '10.5');
 equal(status.providers.runpod.last_hour_spend, '0.28');
 equal(saved.length, 1);
+
+// All OpenRouter/Runpod endpoints inherit retries, including analytics/GraphQL POSTs.
+const originalSleep = GLib.usleep;
+const delays = [];
+const attempts = new Map();
+GLib.usleep = delay => { delays.push(delay); };
+try {
+    const request = (url, key, payload = null) => {
+        const endpoint = `${url}:${JSON.stringify(payload)}`;
+        const session = {timeout: 15, send_and_read(message) {
+            equal(message.method, payload === null ? 'GET' : 'POST');
+            equal(message.request_headers.get_one('Authorization'), `Bearer ${key}`);
+            const attempt = (attempts.get(endpoint) ?? 0) + 1;
+            attempts.set(endpoint, attempt);
+            if (attempt === 1)
+                throw new Error('Simulated timeout');
+            Object.defineProperty(message, 'status_code', {value: attempt === 2 ? 503 : 200});
+            return new GLib.Bytes(new TextEncoder().encode(attempt === 2
+                ? '{}' : JSON.stringify(fetch(url, key, payload))));
+        }};
+        const result = fetchJson(session, url, key, payload);
+        equal(session.timeout, 15);
+        return result;
+    };
+    const recovered = run(undefined, request).status;
+    equal(recovered.providers.openrouter.balance, '65.75');
+    equal(recovered.providers.openrouter.last_hour_spend, '0.3');
+    equal(recovered.providers.runpod.balance, '10.5');
+    equal(recovered.providers.runpod.last_hour_spend, '0.28');
+    equal(attempts.size, 4);
+    for (const count of attempts.values())
+        equal(count, 3);
+    equal(delays.join(','), Array(4).fill('1000000,2000000').join(','));
+    assert(!JSON.stringify(recovered).includes('-key'), 'Credentials leaked into status');
+} finally {
+    GLib.usleep = originalSleep;
+}
 
 status = run(id => id === 'runpod' ? null : 'or-key').status;
 equal(status.providers.runpod.configured, false);

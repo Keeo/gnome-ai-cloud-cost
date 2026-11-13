@@ -7,7 +7,7 @@ export const name = 'NanoGPT';
 export const estimateFromBalance = true;
 
 export function balance(key, fetch) {
-    // This read-only endpoint requires POST; the transport never retries POSTs.
+    // This read-only endpoint requires POST; it uses the shared automatic retries.
     const data = fetch('https://api.nano-gpt.com/api/check-balance', key, {}, {
         authScheme: 'X-API-Key',
     });

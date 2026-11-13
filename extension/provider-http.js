@@ -4,18 +4,19 @@ import GLib from 'gi://GLib';
 import Soup from 'gi://Soup?version=3.0';
 import {ProviderError} from './provider-utils.js';
 
-// Retries are opt-in and GET-only: never replay a potentially mutating POST.
+// All provider endpoints are read-only balance/billing queries, including POSTs.
+// Retry transient failures uniformly; providers do not need to opt in.
 // The collector supplies a monotonic deadline shared by all its requests.
+const MAX_RETRIES = 2;
+
 export function fetchJson(session, url, key, payload = null, {
-    authScheme = 'Bearer', timeoutSeconds = session.timeout, retries = 0, deadline = Infinity,
+    authScheme = 'Bearer', timeoutSeconds = session.timeout, deadline = Infinity,
 } = {}) {
     if (!['Bearer', 'Key', 'X-API-Key'].includes(authScheme))
         throw new ProviderError('Unsupported provider authentication scheme');
-    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60 ||
-        !Number.isInteger(retries) || retries < 0 || retries > 2)
+    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60)
         throw new ProviderError('Unsupported provider request options');
     const originalTimeout = session.timeout;
-    const maxRetries = payload === null ? retries : 0;
     try {
         for (let attempt = 0; ; attempt++) {
             const remaining = (deadline - GLib.get_monotonic_time()) / 1e6;
@@ -56,7 +57,7 @@ export function fetchJson(session, url, key, payload = null, {
             }
             // Back off for 1s then 2s, only if the budget leaves time for another request.
             const delay = 2 ** attempt;
-            if (!retryable || attempt >= maxRetries ||
+            if (!retryable || attempt >= MAX_RETRIES ||
                 deadline - GLib.get_monotonic_time() < (delay + 1) * 1e6)
                 throw failure;
             GLib.usleep(delay * 1e6);

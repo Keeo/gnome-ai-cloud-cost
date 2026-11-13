@@ -35,7 +35,6 @@ function request(url, key, payload, options) {
     equal(payload, null);
     equal(options.authScheme, 'Key');
     equal(options.timeoutSeconds, 30);
-    equal(options.retries, 2);
     if (url === 'https://api.fal.ai/v1/account/billing?expand=credits')
         return {credits: {current_balance: '24.5', currency: 'USD'}};
     assert(url.startsWith('https://api.fal.ai/v1/models/billing-events?limit=10000&'));
@@ -163,10 +162,11 @@ for (const [payload, options, scheme, method] of [
         equal(message.request_headers.get_one('Accept'), 'application/json');
         if (payload !== null)
             equal(message.request_headers.get_content_type()[0], 'application/json');
-        throw new Error(`Network error containing ${KEY}`);
+        Object.defineProperty(message, 'status_code', {value: 401});
+        return new GLib.Bytes(new TextEncoder().encode(KEY));
     }};
     throws(() => fetchJson(session, 'https://example.com/billing', KEY, payload, options),
-        'network or timeout');
+        'HTTP 401');
     assert(sent);
 }
 throws(() => fetchJson({}, 'https://example.com', KEY, null, {authScheme: KEY}),
@@ -194,7 +194,7 @@ function transport(responses) {
     }};
     return {session, messages, timeouts};
 }
-const retryOptions = {authScheme: 'Key', timeoutSeconds: 30, retries: 2};
+const retryOptions = {authScheme: 'Key', timeoutSeconds: 30};
 try {
     // Recover from a timeout and then a server error, without leaking request details.
     let mock = transport([new Error(KEY), {status: 503}, {}]);
@@ -208,51 +208,57 @@ try {
     for (const message of mock.messages)
         equal(message.request_headers.get_one('Authorization'), `Key ${KEY}`);
 
-    for (const status of [408, 429, 500, 502, 504]) {
-        mock = transport([{status}, {}]);
-        equal(fetchJson(mock.session, 'https://example.com', KEY, null, retryOptions).ok, true);
-        equal(mock.messages.length, 2);
-        equal(mock.session.timeout, 15);
-    }
-    for (const status of [400, 401, 403, 404]) {
-        mock = transport([{status}]);
-        throws(() => fetchJson(mock.session, 'https://example.com', KEY, null, retryOptions),
-            `HTTP ${status}`);
+    // Defaults apply without options, to GETs and read-only POSTs alike.
+    for (const payload of [null, {query: 'test'}]) {
+        for (const response of [new Error(KEY), ...[408, 429, 500, 502, 504].map(status => ({status}))]) {
+            mock = transport([response, {}]);
+            equal(fetchJson(mock.session, 'https://example.com', KEY, payload).ok, true);
+            equal(mock.messages.length, 2);
+            equal(new Set(mock.messages).size, 2);
+            equal(mock.session.timeout, 15);
+            for (const message of mock.messages) {
+                equal(message.method, payload === null ? 'GET' : 'POST');
+                equal(message.request_headers.get_one('Authorization'), `Bearer ${KEY}`);
+                if (payload !== null)
+                    equal(message.request_headers.get_content_type()[0], 'application/json');
+            }
+        }
+        for (const status of [400, 401, 403, 404]) {
+            mock = transport([{status}]);
+            throws(() => fetchJson(mock.session, 'https://example.com', KEY, payload), `HTTP ${status}`);
+            equal(mock.messages.length, 1);
+            equal(mock.session.timeout, 15);
+        }
+        for (const response of [new Error(KEY), {status: 503}]) {
+            mock = transport([response, response, response]);
+            const before = delays.length;
+            throws(() => fetchJson(mock.session, 'https://example.com', KEY, payload),
+                response instanceof Error ? 'network or timeout' : 'HTTP 503');
+            equal(mock.messages.length, 3);
+            equal(delays.slice(before).join(','), '1000000,2000000');
+            equal(mock.session.timeout, 15);
+        }
+        // Invalid JSON is not a transient transport failure.
+        mock = transport([{body: KEY}]);
+        throws(() => fetchJson(mock.session, 'https://example.com', KEY, payload), 'invalid JSON');
         equal(mock.messages.length, 1);
         equal(mock.session.timeout, 15);
-    }
-    for (const response of [new Error(KEY), {status: 503}]) {
-        mock = transport([response, response, response]);
-        throws(() => fetchJson(mock.session, 'https://example.com', KEY, null, retryOptions),
-            response instanceof Error ? 'network or timeout' : 'HTTP 503');
-        equal(mock.messages.length, 3);
+
+        // The shared budget caps requests and backoff for both methods.
+        mock = transport([{status: 503}]);
+        const before = delays.length;
+        throws(() => fetchJson(mock.session, 'https://example.com', KEY, payload,
+            {deadline: clock + 1.5e6}), 'HTTP 503');
+        equal(mock.timeouts[0], 1);
+        equal(mock.messages.length, 1);
+        equal(delays.length, before);
+        equal(mock.session.timeout, 15);
+        mock = transport([]);
+        throws(() => fetchJson(mock.session, 'https://example.com', KEY, payload,
+            {deadline: clock}), 'budget exhausted');
+        equal(mock.messages.length, 0);
         equal(mock.session.timeout, 15);
     }
-    // Never retry invalid JSON or POSTs, even when retries are requested.
-    mock = transport([{body: KEY}]);
-    throws(() => fetchJson(mock.session, 'https://example.com', KEY, null, retryOptions), 'invalid JSON');
-    equal(mock.messages.length, 1);
-    equal(mock.session.timeout, 15);
-    mock = transport([new Error(KEY)]);
-    throws(() => fetchJson(mock.session, 'https://example.com', KEY, {query: 'test'}, retryOptions),
-        'network or timeout');
-    equal(mock.messages.length, 1);
-    equal(mock.session.timeout, 15);
-
-    // The remaining collection budget caps a request and prevents further retries.
-    mock = transport([{status: 503}]);
-    const before = delays.length;
-    throws(() => fetchJson(mock.session, 'https://example.com', KEY, null,
-        {...retryOptions, deadline: clock + 1.5e6}), 'HTTP 503');
-    equal(mock.timeouts[0], 1);
-    equal(mock.messages.length, 1);
-    equal(delays.length, before);
-    equal(mock.session.timeout, 15);
-    mock = transport([]);
-    throws(() => fetchJson(mock.session, 'https://example.com', KEY, null,
-        {...retryOptions, deadline: clock}), 'budget exhausted');
-    equal(mock.messages.length, 0);
-    equal(mock.session.timeout, 15);
 
     // Recovery flows through collection without replacing the UI values with errors.
     mock = transport([

@@ -6,7 +6,7 @@ export const name = 'Elyum';
 export const estimateFromBalance = true;
 
 export function balance(key, fetch) {
-    const data = fetch('https://api.elyum.ai/v1/account', key, null, {retries: 2});
+    const data = fetch('https://api.elyum.ai/v1/account', key);
     if (data?.error)
         throw new ProviderError('Elyum balance request rejected');
     // The total also includes a studio-only plan allowance. Show API funds only,

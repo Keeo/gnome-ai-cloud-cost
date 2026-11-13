@@ -111,7 +111,7 @@ equal(row.balance_error, 'NanoGPT balance request rejected');
 equal(row.last_hour_spend, null);
 
 // Exercise actual Soup headers and method with fake I/O, never real credentials.
-function transport(response) {
+function transport(responses) {
     const messages = [];
     const session = {timeout: 15, send_and_read(message) {
         messages.push(message);
@@ -120,6 +120,7 @@ function transport(response) {
         equal(message.request_headers.get_one('Authorization'), null);
         equal(message.request_headers.get_one('Accept'), 'application/json');
         equal(message.request_headers.get_content_type()[0], 'application/json');
+        const response = responses[Math.min(messages.length - 1, responses.length - 1)];
         if (response instanceof Error)
             throw response;
         Object.defineProperty(message, 'status_code', {value: response.status ?? 200});
@@ -127,27 +128,54 @@ function transport(response) {
     }};
     return {session, messages};
 }
-let mock = transport({});
-row = run((...args) => fetchJson(mock.session, ...args), () => KEY, SAMPLE).row;
-equal(row.balance, '129.5');
-equal(row.last_hour_spend, '0.5');
-equal(row.spend_source, 'balance_estimate');
-equal(mock.messages.length, 1);
-equal(mock.session.timeout, 15);
-for (const response of [new Error(KEY), {status: 401}, {status: 403}, {status: 429}, {status: 503}, {body: KEY}]) {
-    mock = transport(response);
+const originalSleep = GLib.usleep;
+const delays = [];
+GLib.usleep = delay => { delays.push(delay); };
+try {
+    let mock = transport([{}]);
     row = run((...args) => fetchJson(mock.session, ...args), () => KEY, SAMPLE).row;
-    equal(row.balance, null);
-    equal(row.last_hour_spend, null);
+    equal(row.balance, '129.5');
+    equal(row.last_hour_spend, '0.5');
+    equal(row.spend_source, 'balance_estimate');
     equal(mock.messages.length, 1);
     equal(mock.session.timeout, 15);
-    assert(row.balance_error !== 'Unexpected provider response');
+    for (const response of [{status: 401}, {status: 403}, {body: KEY}]) {
+        mock = transport([response]);
+        row = run((...args) => fetchJson(mock.session, ...args), () => KEY, SAMPLE).row;
+        equal(row.balance, null);
+        equal(row.last_hour_spend, null);
+        equal(mock.messages.length, 1);
+        equal(mock.session.timeout, 15);
+        assert(row.balance_error !== 'Unexpected provider response');
+    }
+    // The actual NanoGPT POST recovers automatically; no provider retry opt-in.
+    for (const response of [new Error(KEY), {status: 408}, {status: 429}, {status: 503}]) {
+        mock = transport([response, response, {}]);
+        const before = delays.length;
+        row = run((...args) => fetchJson(mock.session, ...args), () => KEY, SAMPLE).row;
+        equal(row.balance, '129.5');
+        equal(row.balance_error, null);
+        equal(row.last_hour_spend, '0.5');
+        equal(row.spend_source, 'balance_estimate');
+        equal(mock.messages.length, 3);
+        equal(new Set(mock.messages).size, 3);
+        equal(delays.slice(before).join(','), '1000000,2000000');
+        equal(mock.session.timeout, 15);
+    }
+    // Exhaustion remains unavailable, without publishing stale balances or raw errors.
+    for (const response of [new Error(KEY), {status: 429}, {status: 503}]) {
+        mock = transport([response]);
+        row = run((...args) => fetchJson(mock.session, ...args), () => KEY, SAMPLE).row;
+        equal(row.balance, null);
+        equal(row.last_hour_spend, null);
+        equal(mock.messages.length, 3);
+        equal(mock.session.timeout, 15);
+        equal(row.balance_error, response instanceof Error
+            ? 'Provider request failed (network or timeout)'
+            : `HTTP ${response.status} from provider`);
+    }
+} finally {
+    GLib.usleep = originalSleep;
 }
-// Even an opt-in retry must not replay a POST, including X-API-Key requests.
-mock = transport(new Error(KEY));
-throws(() => fetchJson(mock.session, 'https://example.com', KEY, {},
-    {authScheme: 'X-API-Key', retries: 2}), 'network or timeout');
-equal(mock.messages.length, 1);
-equal(mock.session.timeout, 15);
 
 print('NanoGPT tests passed');

@@ -36,12 +36,11 @@ function account(usd = 3) {
     };
 }
 let calls = 0;
-function request(url, key, payload, options) {
+function request(url, key, payload = null) {
     calls++;
     equal(url, 'https://api.elyum.ai/v1/account');
     equal(key, KEY);
     equal(payload, null); // GET; no render or other mutating request.
-    equal(options.retries, 2);
     return account();
 }
 function run(fetch = request, lookup = () => KEY, previous = []) {
